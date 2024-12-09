@@ -16,3 +16,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: simconnect-go
+          path: fuelhack.exe
