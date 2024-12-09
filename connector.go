@@ -126,10 +126,10 @@ func (c *Connector) connect(ctx context.Context) error {
 	defer cancel()
 
 	sc, err := client.New(c.name)
-	if err != nil && !errors.Is(err, syscall.Errno(0)) {
+	if err != nil && errors.Is(err, syscall.Errno(0)) {
 		return fmt.Errorf("cannot connect to SimConnect: %w", err)
 	} else if err != nil {
-		return nil
+		return fmt.Errorf("cannot connect to SimConnect: %w", err)
 	}
 	defer func() {
 		if err := sc.Close(); err != nil {

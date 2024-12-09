@@ -146,9 +146,9 @@ func New(name string) (*SimConnect, error) {
 		0,
 	}
 
-	_, _, err := proc_SimConnect_Open.Call(args...)
-	if err != nil {
-		return nil, fmt.Errorf("SimConnect_Open error: %w", err)
+	r1, _, err := proc_SimConnect_Open.Call(args...)
+	if int32(r1) < 0 {
+		return nil, fmt.Errorf("SimConnect_Open error: %s", err)
 	}
 	return s, nil
 }
