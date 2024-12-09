@@ -1,4 +1,5 @@
-**SimConnect API Connector**
+# SimConnect API Connector
+[![Go Reference](https://pkg.go.dev/badge/github.com/bmurray/bmurray/simconnect-go.svg)](https://pkg.go.dev/github.com/bmurray/simconnect-go)
 
 This package provides a convenient way to interact with the SimConnect API that takes the hassle out of dealing with the polling behavior of the API.
 

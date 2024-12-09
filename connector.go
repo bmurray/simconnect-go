@@ -34,6 +34,8 @@ type Connector struct {
 	receivers []Receiver
 	cycle     time.Duration
 
+	dllPath string
+
 	log *slog.Logger
 }
 
@@ -60,6 +62,14 @@ func WithCycle(cycle time.Duration) ConnectorOption {
 func WithLogger(l *slog.Logger) ConnectorOption {
 	return func(c *Connector) {
 		c.log = l.With("module", "simconnect")
+	}
+}
+
+// WithDLLPath sets the path to the SimConnect DLL
+// if not set, the default DLL will be used
+func WithDLLPath(path string) ConnectorOption {
+	return func(c *Connector) {
+		c.dllPath = path
 	}
 }
 
@@ -125,9 +135,13 @@ func (c *Connector) connect(ctx context.Context) error {
 	ctx2, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	opts := []client.SimConnectOption{}
+	if c.dllPath != "" {
+		opts = append(opts, client.WithDLLPath(c.dllPath))
+	}
 	sc, err := client.New(c.name)
 	if err != nil && errors.Is(err, syscall.Errno(0)) {
-		return fmt.Errorf("cannot connect to SimConnect: %w", err)
+		return nil
 	} else if err != nil {
 		return fmt.Errorf("cannot connect to SimConnect: %w", err)
 	}

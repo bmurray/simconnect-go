@@ -4,129 +4,62 @@ package client
 // MSFS-SDK/SimConnect\ SDK/lib/SimConnect.dll
 
 import (
-	_ "embed"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"reflect"
 	"syscall"
 	"unsafe"
 )
 
-//go:embed SimConnect.dll
-var simconnectDLL []byte
-
-var proc_SimConnect_Open *syscall.LazyProc
-var proc_SimConnect_Close *syscall.LazyProc
-var proc_SimConnect_AddToDataDefinition *syscall.LazyProc
-var proc_SimConnect_SubscribeToSystemEvent *syscall.LazyProc
-var proc_SimConnect_GetNextDispatch *syscall.LazyProc
-var proc_SimConnect_RequestDataOnSimObject *syscall.LazyProc
-var proc_SimConnect_RequestDataOnSimObjectType *syscall.LazyProc
-var proc_SimConnect_SetDataOnSimObject *syscall.LazyProc
-var proc_SimConnect_SubscribeToFacilities *syscall.LazyProc
-var proc_SimConnect_UnsubscribeToFacilities *syscall.LazyProc
-var proc_SimConnect_RequestFacilitiesList *syscall.LazyProc
-var proc_SimConnect_MapClientEventToSimEvent *syscall.LazyProc
-var proc_SimConnect_MenuAddItem *syscall.LazyProc
-var proc_SimConnect_MenuDeleteItem *syscall.LazyProc
-var proc_SimConnect_AddClientEventToNotificationGroup *syscall.LazyProc
-var proc_SimConnect_SetNotificationGroupPriority *syscall.LazyProc
-var proc_SimConnect_Text *syscall.LazyProc
-var proc_SimConnect_TransmitClientEvent *syscall.LazyProc
-
+// SimConnect is the main struct for connecting to SimConnect
 type SimConnect struct {
 	handle      unsafe.Pointer
-	DefineMap   map[string]DWORD
-	LastEventID DWORD
+	defineMap   map[string]DWORD
+	lastEventID DWORD
 
-	log *slog.Logger
+	dllPath string
+	dll     *dll
+	log     *slog.Logger
 }
 
-var sysPaths = []string{
-	"c:\\MSFS SDK\\SimConnect SDK\\lib\\SimConnect.dll",
-	"c:\\MSFS 2024 SDK\\SimConnect SDK\\lib\\SimConnect.dll",
+// SimConnectOption is a function that sets options on the SimConnect
+type SimConnectOption func(*SimConnect)
+
+// WithLogger sets the logger for the SimConnect
+func WithLogger(l *slog.Logger) SimConnectOption {
+	return func(s *SimConnect) {
+		s.log = l.With("module", "simconnect")
+	}
 }
 
-func findSysPath() (string, error) {
-	for _, sysPath := range sysPaths {
-		st, err := os.Stat(sysPath)
-		if err == nil && !st.IsDir() {
-			return sysPath, nil
-		}
+// WithDLLPath sets the path to the SimConnect DLL
+func WithDLLPath(path string) SimConnectOption {
+	return func(s *SimConnect) {
+		s.dllPath = path
 	}
-	return "", fmt.Errorf("SimConnect.dll not found")
 }
 
-func getFilePath() (string, error) {
-	sysPath, err := findSysPath()
-	if err == nil {
-		return sysPath, nil
-	}
-	slog.Debug("SimConnect.dll not found in default paths; using bundled")
-	exePath, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	dllPath := filepath.Join(filepath.Dir(exePath), "SimConnect.dll")
-	st, err := os.Stat(dllPath)
-	if err == nil && !st.IsDir() {
-		return dllPath, nil
-	}
-	path, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("cannot get cwd: %w", err)
-	}
-	dllPath = filepath.Join(path, "SimConnect.dll")
-	st, err = os.Stat(dllPath)
-	if err == nil && !st.IsDir() {
-		return dllPath, nil
-	}
-	err = os.WriteFile(dllPath, simconnectDLL, 0644)
-	if err != nil {
-		return "", fmt.Errorf("cannot write file: %w", err)
-	}
-	return dllPath, nil
-}
-
-func New(name string) (*SimConnect, error) {
+// New creates a new SimConnect connection
+func New(name string, opts ...SimConnectOption) (*SimConnect, error) {
 	s := &SimConnect{
-		DefineMap:   map[string]DWORD{"_last": 0},
-		LastEventID: 0,
+		defineMap:   map[string]DWORD{"_last": 0},
+		lastEventID: 0,
 		log:         slog.With("name", name, "module", "simconnect"),
 	}
 
-	if proc_SimConnect_Open == nil {
-		dllPath, err := getFilePath()
+	for _, opt := range opts {
+		opt(s)
+	}
+	if s.dllPath != "" {
+		d, err := newDLL(s.dllPath)
 		if err != nil {
 			return nil, err
 		}
-		s.log.Info("Using SimConnect DLL", "path", dllPath)
-
-		mod := syscall.NewLazyDLL(dllPath)
-		if err = mod.Load(); err != nil {
-			return nil, err
-		}
-
-		proc_SimConnect_Open = mod.NewProc("SimConnect_Open")
-		proc_SimConnect_Close = mod.NewProc("SimConnect_Close")
-		proc_SimConnect_AddToDataDefinition = mod.NewProc("SimConnect_AddToDataDefinition")
-		proc_SimConnect_SubscribeToSystemEvent = mod.NewProc("SimConnect_SubscribeToSystemEvent")
-		proc_SimConnect_GetNextDispatch = mod.NewProc("SimConnect_GetNextDispatch")
-		proc_SimConnect_RequestDataOnSimObject = mod.NewProc("SimConnect_RequestDataOnSimObject")
-		proc_SimConnect_RequestDataOnSimObjectType = mod.NewProc("SimConnect_RequestDataOnSimObjectType")
-		proc_SimConnect_SetDataOnSimObject = mod.NewProc("SimConnect_SetDataOnSimObject")
-		proc_SimConnect_SubscribeToFacilities = mod.NewProc("SimConnect_SubscribeToFacilities")
-		proc_SimConnect_UnsubscribeToFacilities = mod.NewProc("SimConnect_UnsubscribeToFacilities")
-		proc_SimConnect_RequestFacilitiesList = mod.NewProc("SimConnect_RequestFacilitiesList")
-		proc_SimConnect_MapClientEventToSimEvent = mod.NewProc("SimConnect_MapClientEventToSimEvent")
-		proc_SimConnect_MenuAddItem = mod.NewProc("SimConnect_MenuAddItem")
-		proc_SimConnect_MenuDeleteItem = mod.NewProc("SimConnect_MenuDeleteItem")
-		proc_SimConnect_AddClientEventToNotificationGroup = mod.NewProc("SimConnect_AddClientEventToNotificationGroup")
-		proc_SimConnect_SetNotificationGroupPriority = mod.NewProc("SimConnect_SetNotificationGroupPriority")
-		proc_SimConnect_Text = mod.NewProc("SimConnect_Text")
-		proc_SimConnect_TransmitClientEvent = mod.NewProc("SimConnect_TransmitClientEvent")
+		s.dll = d
+	} else if defaultDll == nil {
+		return nil, fmt.Errorf("no default DLL")
+	} else {
+		s.dll = defaultDll
 	}
 
 	// SimConnect_Open(
@@ -146,19 +79,21 @@ func New(name string) (*SimConnect, error) {
 		0,
 	}
 
-	r1, _, err := proc_SimConnect_Open.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_Open.Call(args...)
 	if int32(r1) < 0 {
 		return nil, fmt.Errorf("SimConnect_Open error: %s", err)
 	}
 	return s, nil
 }
 
+// GetEventID returns a new event ID
 func (s *SimConnect) GetEventID() DWORD {
-	id := s.LastEventID
-	s.LastEventID += 1
+	id := s.lastEventID
+	s.lastEventID += 1
 	return id
 }
 
+// GetDefineID returns the define ID for a struct
 func (s *SimConnect) GetDefineID(a interface{}) DWORD {
 	t := reflect.TypeOf(a)
 	if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
@@ -166,16 +101,17 @@ func (s *SimConnect) GetDefineID(a interface{}) DWORD {
 	}
 	structName := t.Name()
 
-	id, ok := s.DefineMap[structName]
+	id, ok := s.defineMap[structName]
 	if !ok {
-		id = s.DefineMap["_last"]
-		s.DefineMap[structName] = id
-		s.DefineMap["_last"] = id + 1
+		id = s.defineMap["_last"]
+		s.defineMap[structName] = id
+		s.defineMap["_last"] = id + 1
 	}
 
 	return id
 }
 
+// RegisterDataDefinition registers a struct for data definition
 func (s *SimConnect) RegisterDataDefinition(a interface{}) error {
 	defineID := s.GetDefineID(a)
 	v := reflect.ValueOf(a)
@@ -208,17 +144,19 @@ func (s *SimConnect) RegisterDataDefinition(a interface{}) error {
 	return nil
 }
 
+// Close closes the SimConnect connection
 func (s *SimConnect) Close() error {
 	// SimConnect_Open(
 	//   HANDLE * phSimConnect,
 	// );
-	r1, _, err := proc_SimConnect_Close.Call(uintptr(s.handle))
+	r1, _, err := s.dll.proc_SimConnect_Close.Call(uintptr(s.handle))
 	if int32(r1) < 0 {
 		return fmt.Errorf("SimConnect_Close error: %d %s", int32(r1), err)
 	}
 	return nil
 }
 
+// derefDataType returns the SimConnect data type for a Go type
 func (s *SimConnect) AddToDataDefinition(defineID DWORD, name, unit string, dataType DWORD) error {
 	// SimConnect_AddToDataDefinition(
 	//   HANDLE hSimConnect,
@@ -246,7 +184,7 @@ func (s *SimConnect) AddToDataDefinition(defineID DWORD, name, unit string, data
 		args[3] = uintptr(unsafe.Pointer(&_unit[0]))
 	}
 
-	r1, _, err := proc_SimConnect_AddToDataDefinition.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_AddToDataDefinition.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf("SimConnect_AddToDataDefinition for %s error: %d %s", name, r1, err)
 	}
@@ -269,7 +207,7 @@ func (s *SimConnect) SubscribeToSystemEvent(eventID DWORD, eventName string) err
 		uintptr(unsafe.Pointer(&_eventName[0])),
 	}
 
-	r1, _, err := proc_SimConnect_SubscribeToSystemEvent.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_SubscribeToSystemEvent.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf("SimConnect_SubscribeToSystemEvent for %s error: %d %s", eventName, r1, err)
 	}
@@ -293,7 +231,7 @@ func (s *SimConnect) RequestDataOnSimObjectType(requestID, defineID, radius, sim
 		uintptr(simobjectType),
 	}
 
-	r1, _, err := proc_SimConnect_RequestDataOnSimObjectType.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_RequestDataOnSimObjectType.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_RequestDataOnSimObjectType for requestID %d defineID %d error: %d %s",
@@ -329,7 +267,7 @@ func (s *SimConnect) RequestDataOnSimObject(requestID, defineID, objectID, perio
 		uintptr(limit),
 	}
 
-	r1, _, err := proc_SimConnect_RequestDataOnSimObject.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_RequestDataOnSimObject.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_RequestDataOnSimObject for requestID %d defineID %d error: %d %s",
@@ -362,7 +300,7 @@ func (s *SimConnect) SetDataOnSimObject(defineID, simobjectType, flags, arrayCou
 		uintptr(buf),
 	}
 
-	r1, _, err := proc_SimConnect_SetDataOnSimObject.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_SetDataOnSimObject.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_SetDataOnSimObject for defineID %d error: %d %s",
@@ -386,7 +324,7 @@ func (s *SimConnect) SubscribeToFacilities(facilityType, requestID DWORD) error 
 		uintptr(requestID),
 	}
 
-	r1, _, err := proc_SimConnect_SubscribeToFacilities.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_SubscribeToFacilities.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_SubscribeToFacilities for type %d error: %d %s",
@@ -408,7 +346,7 @@ func (s *SimConnect) UnsubscribeToFacilities(facilityType DWORD) error {
 		uintptr(facilityType),
 	}
 
-	r1, _, err := proc_SimConnect_UnsubscribeToFacilities.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_UnsubscribeToFacilities.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"UnsubscribeToFacilities for type %d error: %d %s",
@@ -432,7 +370,7 @@ func (s *SimConnect) RequestFacilitiesList(facilityType, requestID DWORD) error 
 		uintptr(requestID),
 	}
 
-	r1, _, err := proc_SimConnect_RequestFacilitiesList.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_RequestFacilitiesList.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_RequestFacilitiesList for type %d error: %d %s",
@@ -458,7 +396,7 @@ func (s *SimConnect) MapClientEventToSimEvent(eventID DWORD, eventName string) e
 		uintptr(unsafe.Pointer(&_eventName[0])),
 	}
 
-	r1, _, err := proc_SimConnect_MapClientEventToSimEvent.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_MapClientEventToSimEvent.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_MapClientEventToSimEvent for eventID %d error: %d %s",
@@ -471,7 +409,7 @@ func (s *SimConnect) MapClientEventToSimEvent(eventID DWORD, eventName string) e
 
 func (s *SimConnect) TransmitClientEvent(objectID, eventID, dwData, groupID, flags DWORD) error {
 
-	r1, _, err := proc_SimConnect_TransmitClientEvent.Call(
+	r1, _, err := s.dll.proc_SimConnect_TransmitClientEvent.Call(
 		uintptr(s.handle),
 		uintptr(objectID),
 		uintptr(eventID),
@@ -503,7 +441,7 @@ func (s *SimConnect) MenuAddItem(menuItem string, menuEventID, Data DWORD) error
 		uintptr(Data),
 	}
 
-	r1, _, err := proc_SimConnect_MenuAddItem.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_MenuAddItem.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_MenuAddItem for menuEventID %d '%s' error: %d %s",
@@ -525,7 +463,7 @@ func (s *SimConnect) MenuDeleteItem(menuItem string, menuEventID, Data DWORD) er
 		uintptr(menuEventID),
 	}
 
-	r1, _, err := proc_SimConnect_MenuDeleteItem.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_MenuDeleteItem.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_MenuDeleteItem for menuEventID %d error: %d %s",
@@ -550,7 +488,7 @@ func (s *SimConnect) AddClientEventToNotificationGroup(groupID, eventID DWORD) e
 		uintptr(eventID),
 	}
 
-	r1, _, err := proc_SimConnect_AddClientEventToNotificationGroup.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_AddClientEventToNotificationGroup.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_AddClientEventToNotificationGroup for groupID %d eventID %d error: %d %s",
@@ -574,7 +512,7 @@ func (s *SimConnect) SetNotificationGroupPriority(groupID, priority DWORD) error
 		uintptr(priority),
 	}
 
-	r1, _, err := proc_SimConnect_SetNotificationGroupPriority.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_SetNotificationGroupPriority.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_SetNotificationGroupPriority for groupID %d priority %d error: %d %s",
@@ -606,7 +544,7 @@ func (s *SimConnect) ShowText(textType DWORD, duration float64, eventID DWORD, t
 		uintptr(unsafe.Pointer(&_text[0])),
 	}
 
-	r1, _, err := proc_SimConnect_Text.Call(args...)
+	r1, _, err := s.dll.proc_SimConnect_Text.Call(args...)
 	if int32(r1) < 0 {
 		return fmt.Errorf(
 			"SimConnect_Text for eventID %d textType %d text '%s' error: %d %s",
@@ -621,7 +559,7 @@ func (s *SimConnect) GetNextDispatch() (unsafe.Pointer, int32, error) {
 	var ppData unsafe.Pointer
 	var ppDataLength DWORD
 
-	r1, _, err := proc_SimConnect_GetNextDispatch.Call(
+	r1, _, err := s.dll.proc_SimConnect_GetNextDispatch.Call(
 		uintptr(s.handle),
 		uintptr(unsafe.Pointer(&ppData)),
 		uintptr(unsafe.Pointer(&ppDataLength)),
