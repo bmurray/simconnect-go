@@ -1,0 +1,667 @@
+package client
+
+// MSFS-SDK/SimConnect\ SDK/include/SimConnect.h
+// MSFS-SDK/SimConnect\ SDK/lib/SimConnect.dll
+
+import (
+	_ "embed"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
+	"syscall"
+	"unsafe"
+)
+
+//go:embed SimConnect.dll
+var simconnectDLL []byte
+
+var proc_SimConnect_Open *syscall.LazyProc
+var proc_SimConnect_Close *syscall.LazyProc
+var proc_SimConnect_AddToDataDefinition *syscall.LazyProc
+var proc_SimConnect_SubscribeToSystemEvent *syscall.LazyProc
+var proc_SimConnect_GetNextDispatch *syscall.LazyProc
+var proc_SimConnect_RequestDataOnSimObject *syscall.LazyProc
+var proc_SimConnect_RequestDataOnSimObjectType *syscall.LazyProc
+var proc_SimConnect_SetDataOnSimObject *syscall.LazyProc
+var proc_SimConnect_SubscribeToFacilities *syscall.LazyProc
+var proc_SimConnect_UnsubscribeToFacilities *syscall.LazyProc
+var proc_SimConnect_RequestFacilitiesList *syscall.LazyProc
+var proc_SimConnect_MapClientEventToSimEvent *syscall.LazyProc
+var proc_SimConnect_MenuAddItem *syscall.LazyProc
+var proc_SimConnect_MenuDeleteItem *syscall.LazyProc
+var proc_SimConnect_AddClientEventToNotificationGroup *syscall.LazyProc
+var proc_SimConnect_SetNotificationGroupPriority *syscall.LazyProc
+var proc_SimConnect_Text *syscall.LazyProc
+var proc_SimConnect_TransmitClientEvent *syscall.LazyProc
+
+type SimConnect struct {
+	handle      unsafe.Pointer
+	DefineMap   map[string]DWORD
+	LastEventID DWORD
+
+	log *slog.Logger
+}
+
+var sysPaths = []string{
+	"c:\\MSFS SDK\\SimConnect SDK\\lib\\SimConnect.dll",
+	"c:\\MSFS 2024 SDK\\SimConnect SDK\\lib\\SimConnect.dll",
+}
+
+func findSysPath() (string, error) {
+	for _, sysPath := range sysPaths {
+		st, err := os.Stat(sysPath)
+		if err == nil && !st.IsDir() {
+			return sysPath, nil
+		}
+	}
+	return "", fmt.Errorf("SimConnect.dll not found")
+}
+
+func getFilePath() (string, error) {
+	sysPath, err := findSysPath()
+	if err == nil {
+		return sysPath, nil
+	}
+	slog.Debug("SimConnect.dll not found in default paths; using bundled")
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	dllPath := filepath.Join(filepath.Dir(exePath), "SimConnect.dll")
+	st, err := os.Stat(dllPath)
+	if err == nil && !st.IsDir() {
+		return dllPath, nil
+	}
+	path, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("cannot get cwd: %w", err)
+	}
+	dllPath = filepath.Join(path, "SimConnect.dll")
+	st, err = os.Stat(dllPath)
+	if err == nil && !st.IsDir() {
+		return dllPath, nil
+	}
+	err = os.WriteFile(dllPath, simconnectDLL, 0644)
+	if err != nil {
+		return "", fmt.Errorf("cannot write file: %w", err)
+	}
+	return dllPath, nil
+}
+
+func New(name string) (*SimConnect, error) {
+	s := &SimConnect{
+		DefineMap:   map[string]DWORD{"_last": 0},
+		LastEventID: 0,
+		log:         slog.With("name", name, "module", "simconnect"),
+	}
+
+	if proc_SimConnect_Open == nil {
+		dllPath, err := getFilePath()
+		if err != nil {
+			return nil, err
+		}
+		s.log.Info("Using SimConnect DLL", "path", dllPath)
+
+		mod := syscall.NewLazyDLL(dllPath)
+		if err = mod.Load(); err != nil {
+			return nil, err
+		}
+
+		proc_SimConnect_Open = mod.NewProc("SimConnect_Open")
+		proc_SimConnect_Close = mod.NewProc("SimConnect_Close")
+		proc_SimConnect_AddToDataDefinition = mod.NewProc("SimConnect_AddToDataDefinition")
+		proc_SimConnect_SubscribeToSystemEvent = mod.NewProc("SimConnect_SubscribeToSystemEvent")
+		proc_SimConnect_GetNextDispatch = mod.NewProc("SimConnect_GetNextDispatch")
+		proc_SimConnect_RequestDataOnSimObject = mod.NewProc("SimConnect_RequestDataOnSimObject")
+		proc_SimConnect_RequestDataOnSimObjectType = mod.NewProc("SimConnect_RequestDataOnSimObjectType")
+		proc_SimConnect_SetDataOnSimObject = mod.NewProc("SimConnect_SetDataOnSimObject")
+		proc_SimConnect_SubscribeToFacilities = mod.NewProc("SimConnect_SubscribeToFacilities")
+		proc_SimConnect_UnsubscribeToFacilities = mod.NewProc("SimConnect_UnsubscribeToFacilities")
+		proc_SimConnect_RequestFacilitiesList = mod.NewProc("SimConnect_RequestFacilitiesList")
+		proc_SimConnect_MapClientEventToSimEvent = mod.NewProc("SimConnect_MapClientEventToSimEvent")
+		proc_SimConnect_MenuAddItem = mod.NewProc("SimConnect_MenuAddItem")
+		proc_SimConnect_MenuDeleteItem = mod.NewProc("SimConnect_MenuDeleteItem")
+		proc_SimConnect_AddClientEventToNotificationGroup = mod.NewProc("SimConnect_AddClientEventToNotificationGroup")
+		proc_SimConnect_SetNotificationGroupPriority = mod.NewProc("SimConnect_SetNotificationGroupPriority")
+		proc_SimConnect_Text = mod.NewProc("SimConnect_Text")
+		proc_SimConnect_TransmitClientEvent = mod.NewProc("SimConnect_TransmitClientEvent")
+	}
+
+	// SimConnect_Open(
+	//   HANDLE * phSimConnect,
+	//   LPCSTR szName,
+	//   HWND hWnd,
+	//   DWORD UserEventWin32,
+	//   HANDLE hEventHandle,
+	//   DWORD ConfigIndex
+	// );
+	args := []uintptr{
+		uintptr(unsafe.Pointer(&s.handle)),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(name))),
+		0,
+		0,
+		0,
+		0,
+	}
+
+	_, _, err := proc_SimConnect_Open.Call(args...)
+	if err != nil {
+		return nil, fmt.Errorf("SimConnect_Open error: %w", err)
+	}
+	return s, nil
+}
+
+func (s *SimConnect) GetEventID() DWORD {
+	id := s.LastEventID
+	s.LastEventID += 1
+	return id
+}
+
+func (s *SimConnect) GetDefineID(a interface{}) DWORD {
+	t := reflect.TypeOf(a)
+	if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
+		t = t.Elem()
+	}
+	structName := t.Name()
+
+	id, ok := s.DefineMap[structName]
+	if !ok {
+		id = s.DefineMap["_last"]
+		s.DefineMap[structName] = id
+		s.DefineMap["_last"] = id + 1
+	}
+
+	return id
+}
+
+func (s *SimConnect) RegisterDataDefinition(a interface{}) error {
+	defineID := s.GetDefineID(a)
+	v := reflect.ValueOf(a)
+	if v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+
+	for j := 1; j < v.NumField(); j++ {
+		fieldName := v.Type().Field(j).Name
+		nameTag, _ := v.Type().Field(j).Tag.Lookup("name")
+		unitTag, _ := v.Type().Field(j).Tag.Lookup("unit")
+
+		fieldType := v.Field(j).Kind().String()
+		if fieldType == "array" {
+			fieldType = fmt.Sprintf("[%d]byte", v.Field(j).Type().Len())
+		}
+
+		if nameTag == "" {
+			return fmt.Errorf("%s name tag not found", fieldName)
+		}
+
+		dataType, err := derefDataType(fieldType)
+		if err != nil {
+			return err
+		}
+
+		s.AddToDataDefinition(defineID, nameTag, unitTag, dataType)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) Close() error {
+	// SimConnect_Open(
+	//   HANDLE * phSimConnect,
+	// );
+	r1, _, err := proc_SimConnect_Close.Call(uintptr(s.handle))
+	if int32(r1) < 0 {
+		return fmt.Errorf("SimConnect_Close error: %d %s", int32(r1), err)
+	}
+	return nil
+}
+
+func (s *SimConnect) AddToDataDefinition(defineID DWORD, name, unit string, dataType DWORD) error {
+	// SimConnect_AddToDataDefinition(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_DATA_DEFINITION_ID DefineID,
+	//   const char * DatumName,
+	//   const char * UnitsName,
+	//   SIMCONNECT_DATATYPE DatumType = SIMCONNECT_DATATYPE_FLOAT64,
+	//   float fEpsilon = 0,
+	//   DWORD DatumID = SIMCONNECT_UNUSED
+	// );
+
+	_name := []byte(name + "\x00")
+	_unit := []byte(unit + "\x00")
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(defineID),
+		uintptr(unsafe.Pointer(&_name[0])),
+		uintptr(0),
+		uintptr(dataType),
+		uintptr(float32(0)),
+		uintptr(UNUSED),
+	}
+	if unit != "" {
+		args[3] = uintptr(unsafe.Pointer(&_unit[0]))
+	}
+
+	r1, _, err := proc_SimConnect_AddToDataDefinition.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf("SimConnect_AddToDataDefinition for %s error: %d %s", name, r1, err)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) SubscribeToSystemEvent(eventID DWORD, eventName string) error {
+	// SimConnect_SubscribeToSystemEvent(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_CLIENT_EVENT_ID EventID,
+	//   const char * SystemEventName
+	// );
+
+	_eventName := []byte(eventName + "\x00")
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(eventID),
+		uintptr(unsafe.Pointer(&_eventName[0])),
+	}
+
+	r1, _, err := proc_SimConnect_SubscribeToSystemEvent.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf("SimConnect_SubscribeToSystemEvent for %s error: %d %s", eventName, r1, err)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) RequestDataOnSimObjectType(requestID, defineID, radius, simobjectType DWORD) error {
+	// SimConnect_RequestDataOnSimObjectType(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_DATA_REQUEST_ID RequestID,
+	//   SIMCONNECT_DATA_DEFINITION_ID DefineID,
+	//   DWORD dwRadiusMeters,
+	//   SIMCONNECT_SIMOBJECT_TYPE type
+	// );
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(requestID),
+		uintptr(defineID),
+		uintptr(radius),
+		uintptr(simobjectType),
+	}
+
+	r1, _, err := proc_SimConnect_RequestDataOnSimObjectType.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_RequestDataOnSimObjectType for requestID %d defineID %d error: %d %s",
+			requestID, defineID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) RequestDataOnSimObject(requestID, defineID, objectID, period, flags, origin, interval, limit DWORD) error {
+	// SimConnect_RequestDataOnSimObject(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_DATA_REQUEST_ID RequestID,
+	//   SIMCONNECT_DATA_DEFINITION_ID DefineID,
+	//   SIMCONNECT_OBJECT_ID ObjectID,
+	//   SIMCONNECT_PERIOD Period,
+	//   SIMCONNECT_DATA_REQUEST_FLAG Flags = 0,
+	//   DWORD origin = 0,
+	//   DWORD interval = 0,
+	//   DWORD limit = 0
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(requestID),
+		uintptr(defineID),
+		uintptr(objectID),
+		uintptr(period),
+		uintptr(flags),
+		uintptr(origin),
+		uintptr(interval),
+		uintptr(limit),
+	}
+
+	r1, _, err := proc_SimConnect_RequestDataOnSimObject.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_RequestDataOnSimObject for requestID %d defineID %d error: %d %s",
+			requestID, defineID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) SetDataOnSimObject(defineID, simobjectType, flags, arrayCount, size DWORD, buf unsafe.Pointer) error {
+	//s.SetDataOnSimObject(defineID, simconnect.OBJECT_ID_USER, 0, 0, size, buf)
+
+	// SimConnect_SetDataOnSimObject(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_DATA_DEFINITION_ID DefineID,
+	//   SIMCONNECT_OBJECT_ID ObjectID,
+	//   SIMCONNECT_DATA_SET_FLAG Flags,
+	//   DWORD ArrayCount,
+	//   DWORD cbUnitSize,
+	//   void * pDataSet
+	// );
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(defineID),
+		uintptr(simobjectType),
+		uintptr(flags),
+		uintptr(arrayCount),
+		uintptr(size),
+		uintptr(buf),
+	}
+
+	r1, _, err := proc_SimConnect_SetDataOnSimObject.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_SetDataOnSimObject for defineID %d error: %d %s",
+			defineID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) SubscribeToFacilities(facilityType, requestID DWORD) error {
+	// SimConnect_SubscribeToFacilities(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_FACILITY_LIST_TYPE type,
+	//   SIMCONNECT_DATA_REQUEST_ID RequestID
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(facilityType),
+		uintptr(requestID),
+	}
+
+	r1, _, err := proc_SimConnect_SubscribeToFacilities.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_SubscribeToFacilities for type %d error: %d %s",
+			facilityType, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) UnsubscribeToFacilities(facilityType DWORD) error {
+	// SimConnect_UnsubscribeToFacilities(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_FACILITY_LIST_TYPE type
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(facilityType),
+	}
+
+	r1, _, err := proc_SimConnect_UnsubscribeToFacilities.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"UnsubscribeToFacilities for type %d error: %d %s",
+			facilityType, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) RequestFacilitiesList(facilityType, requestID DWORD) error {
+	// SimConnect_RequestFacilitiesList(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_FACILITY_LIST_TYPE type,
+	//   SIMCONNECT_DATA_REQUEST_ID RequestID
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(facilityType),
+		uintptr(requestID),
+	}
+
+	r1, _, err := proc_SimConnect_RequestFacilitiesList.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_RequestFacilitiesList for type %d error: %d %s",
+			facilityType, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) MapClientEventToSimEvent(eventID DWORD, eventName string) error {
+	// SimConnect_MapClientEventToSimEvent(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_CLIENT_EVENT_ID EventID,
+	//   const char * EventName = ""
+	// );
+
+	_eventName := []byte(eventName + "\x00")
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(eventID),
+		uintptr(unsafe.Pointer(&_eventName[0])),
+	}
+
+	r1, _, err := proc_SimConnect_MapClientEventToSimEvent.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_MapClientEventToSimEvent for eventID %d error: %d %s",
+			eventID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) TransmitClientEvent(objectID, eventID, dwData, groupID, flags DWORD) error {
+
+	r1, _, err := proc_SimConnect_TransmitClientEvent.Call(
+		uintptr(s.handle),
+		uintptr(objectID),
+		uintptr(eventID),
+		uintptr(dwData),
+		uintptr(groupID),
+		uintptr(flags),
+	)
+	if int32(r1) < 0 {
+		return fmt.Errorf("SimConnect_TransmitClientEvent for eventID %d error: %d %s", eventID, r1, err)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) MenuAddItem(menuItem string, menuEventID, Data DWORD) error {
+	// SimConnect_MenuAddItem(
+	//   HANDLE hSimConnect,
+	//   const char * szMenuItem,
+	//   SIMCONNECT_CLIENT_EVENT_ID MenuEventID,
+	//   DWORD dwData
+	// );
+
+	_menuItem := []byte(menuItem + "\x00")
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(unsafe.Pointer(&_menuItem[0])),
+		uintptr(menuEventID),
+		uintptr(Data),
+	}
+
+	r1, _, err := proc_SimConnect_MenuAddItem.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_MenuAddItem for menuEventID %d '%s' error: %d %s",
+			menuEventID, menuItem, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) MenuDeleteItem(menuItem string, menuEventID, Data DWORD) error {
+	// SimConnect_MenuDeleteItem(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_CLIENT_EVENT_ID MenuEventID
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(menuEventID),
+	}
+
+	r1, _, err := proc_SimConnect_MenuDeleteItem.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_MenuDeleteItem for menuEventID %d error: %d %s",
+			menuEventID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) AddClientEventToNotificationGroup(groupID, eventID DWORD) error {
+	// SimConnect_AddClientEventToNotificationGroup(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_NOTIFICATION_GROUP_ID GroupID,
+	//   SIMCONNECT_CLIENT_EVENT_ID EventID,
+	//   BOOL bMaskable = FALSE
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(groupID),
+		uintptr(eventID),
+	}
+
+	r1, _, err := proc_SimConnect_AddClientEventToNotificationGroup.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_AddClientEventToNotificationGroup for groupID %d eventID %d error: %d %s",
+			groupID, eventID, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) SetNotificationGroupPriority(groupID, priority DWORD) error {
+	// SimConnect_SetNotificationGroupPriority(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_NOTIFICATION_GROUP_ID GroupID,
+	//   DWORD uPriority
+	// );
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(groupID),
+		uintptr(priority),
+	}
+
+	r1, _, err := proc_SimConnect_SetNotificationGroupPriority.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_SetNotificationGroupPriority for groupID %d priority %d error: %d %s",
+			groupID, priority, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) ShowText(textType DWORD, duration float64, eventID DWORD, text string) error {
+	// SimConnect_Text(
+	//   HANDLE hSimConnect,
+	//   SIMCONNECT_TEXT_TYPE type,
+	//   float fTimeSeconds,
+	//   SIMCONNECT_CLIENT_EVENT_ID EventID,
+	//   DWORD cbUnitSize,
+	//   void * pDataSet
+	// );
+
+	_text := []byte(text + "\x00")
+
+	args := []uintptr{
+		uintptr(s.handle),
+		uintptr(textType),
+		uintptr(duration),
+		uintptr(eventID),
+		uintptr(DWORD(len(_text))),
+		uintptr(unsafe.Pointer(&_text[0])),
+	}
+
+	r1, _, err := proc_SimConnect_Text.Call(args...)
+	if int32(r1) < 0 {
+		return fmt.Errorf(
+			"SimConnect_Text for eventID %d textType %d text '%s' error: %d %s",
+			eventID, textType, text, r1, err,
+		)
+	}
+
+	return nil
+}
+
+func (s *SimConnect) GetNextDispatch() (unsafe.Pointer, int32, error) {
+	var ppData unsafe.Pointer
+	var ppDataLength DWORD
+
+	r1, _, err := proc_SimConnect_GetNextDispatch.Call(
+		uintptr(s.handle),
+		uintptr(unsafe.Pointer(&ppData)),
+		uintptr(unsafe.Pointer(&ppDataLength)),
+	)
+
+	return ppData, int32(r1), err
+}
+
+// SetData currently only supports float64 fields
+func (s *SimConnect) SetData(fr any) error {
+	defineId := s.GetDefineID(fr)
+
+	cnt := 0
+
+	val := reflect.ValueOf(fr)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+
+	typ := val.Type()
+	if typ.Kind() != reflect.Struct {
+		return fmt.Errorf("not a struct: %s", typ.Kind().String())
+	}
+	buf := []float64{}
+
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		name := field.Tag.Get("name")
+		if name == "" {
+			continue
+		}
+		if field.Type.Kind() != reflect.Float64 {
+			return fmt.Errorf("not a float64: %s -- %s", field.Name, field.Type.Kind().String())
+		}
+		buf = append(buf, val.Field(i).Float())
+		cnt++
+	}
+
+	size := DWORD(cnt * 8)
+	slog.Debug("Setting data", "defineid", defineId, "count", cnt, "size", size)
+	return s.SetDataOnSimObject(defineId, OBJECT_ID_USER, 0, 0, size, unsafe.Pointer(&buf[0]))
+
+}
